@@ -1,0 +1,108 @@
+/**
+ * @file main.cpp
+ * @brief 3D Velocity Obstacle (VO) Detect and Avoid (DAA) Engine for UAVs
+ * @author Ayoub Lahmar (@Redayoub-lang)
+ * @version 2.0
+ */
+
+#include 
+#include 
+#include 
+#include 
+
+struct Vector3D {
+    double x, y, z;
+
+    Vector3D operator+(const Vector3D& o) const { return {x + o.x, y + o.y, z + o.z}; }
+    Vector3D operator-(const Vector3D& o) const { return {x - o.x, y - o.y, z - o.z}; }
+    Vector3D operator*(double s) const { return {x * s, y * s, z * s}; }
+    
+    double dot(const Vector3D& o) const { return x * o.x + y * o.y + z * o.z; }
+    double sqrMagnitude() const { return dot(*this); }
+    double magnitude() const { return std::sqrt(sqrMagnitude()); }
+};
+
+class VelocityObstacleDAA {
+private:
+    double safety_radius; // Total spherical safety volume: R_A + R_B (meters)
+
+public:
+    explicit VelocityObstacleDAA(double safety_radius_meters = 5.0) 
+        : safety_radius(safety_radius_meters) {}
+
+    bool isCollisionTrajectory(const Vector3D& pos_A, const Vector3D& vel_A,
+                               const Vector3D& pos_B, const Vector3D& vel_B,
+                               double time_horizon_sec = 10.0) const {
+        
+        Vector3D relative_pos = pos_B - pos_A; // Relative Position Vector (A -> B)
+        Vector3D relative_vel = vel_A - vel_B; // Relative Velocity Vector (V_A - V_B)
+
+        if (relative_pos.magnitude() < safety_radius) return true; // Inside safety zone
+
+        double rel_vel_sq = relative_vel.sqrMagnitude();
+        if (rel_vel_sq < 1e-6) return false; // Negligible relative velocity
+
+        double proj = relative_pos.dot(relative_vel);
+        if (proj <= 0.0) return false; // Moving away from collision cone
+
+        double time_to_closest = proj / rel_vel_sq;
+        if (time_to_closest > time_horizon_sec) return false; // Collision beyond horizon
+
+        Vector3D closest_pos = relative_pos - relative_vel * time_to_closest;
+        return closest_pos.magnitude() < safety_radius;
+    }
+
+    Vector3D computeEvasiveVelocity(const Vector3D& pos_A, const Vector3D& pref_vel_A,
+                                    const Vector3D& pos_B, const Vector3D& vel_B) const {
+        
+        if (!isCollisionTrajectory(pos_A, pref_vel_A, pos_B, vel_B)) {
+            return pref_vel_A; // Nominal velocity is safe
+        }
+
+        Vector3D best_vel = pref_vel_A;
+        double min_penalty = 1e9;
+
+        // Discrete Velocity Space Sampling
+        for (double dy = -3.0; dy <= 3.0; dy += 1.0) {
+            for (double dz = -3.0; dz <= 3.0; dz += 1.0) {
+                Vector3D candidate_vel = {pref_vel_A.x, pref_vel_A.y + dy, pref_vel_A.z + dz};
+
+                if (!isCollisionTrajectory(pos_A, candidate_vel, pos_B, vel_B)) {
+                    double penalty = (candidate_vel - pref_vel_A).sqrMagnitude();
+                    if (penalty < min_penalty) {
+                        min_penalty = penalty;
+                        best_vel = candidate_vel;
+                    }
+                }
+            }
+        }
+        return best_vel;
+    }
+};
+
+int main() {
+    std::cout << "=========================================================\n";
+    std::cout << "   3D VELOCITY OBSTACLE (VO) AIRSPACE DAA ENGINE         \n";
+    std::cout << "   Developer: Ayoub Lahmar (@Redayoub-lang)              \n";
+    std::cout << "=========================================================\n\n";
+
+    // Initialize DAA Engine with 6.0m safety sphere boundary
+    VelocityObstacleDAA daa_engine(6.0);
+
+    Vector3D pos_A{0.0, 0.0, 100.0};
+    Vector3D vel_A{10.0, 0.0, 0.0};
+
+    Vector3D pos_B{30.0, -30.0, 100.0};
+    Vector3D vel_B{0.0, 10.0, 0.0};
+
+    bool threat = daa_engine.isCollisionTrajectory(pos_A, vel_A, pos_B, vel_B);
+    std::cout << "[TRAJECTORY EVALUATION] Conflict Detected: " << (threat ? "YES (ALERT)" : "NO") << "\n";
+
+    if (threat) {
+        Vector3D safe_vel = daa_engine.computeEvasiveVelocity(pos_A, vel_A, pos_B, vel_B);
+        std::cout << "[EVASIVE RESOLUTION] Vector: (" 
+                  << safe_vel.x << ", " << safe_vel.y << ", " << safe_vel.z << ") m/s\n";
+    }
+
+    return 0;
+}
